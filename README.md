@@ -12,9 +12,7 @@ A Streamlit app that monitors posture in real-time using webcam input and MediaP
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
-Perfect ✅ Here’s a **formal copyright and permission statement** you can place in a dedicated **LICENSE** file or inside your **README.md**.
 
----
 
 # Copyright and Permission Statement
 
@@ -37,6 +35,4 @@ If permission is granted to use this work in research or publications, it must b
 
 **DOI:** [https://doi.org/10.5281/zenodo.15349024](https://doi.org/10.5281/zenodo.15349024)
 
----
-
-👉 Do you want me to also **adapt this into a custom LICENSE file format** (similar to MIT/Apache but with your permission clause) so GitHub will automatically recognize it as a license in the repo?
+-
