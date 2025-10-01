@@ -85,21 +85,18 @@ webrtc_streamer(
     key="posture-coach",
     video_processor_factory=PostureDetector,   # ✅ updated arg
     media_stream_constraints={"video": True, "audio": False},
-    rtc_configuration={                        # ✅ added TURN config
+    rtc_configuration={
         "iceServers": [
             {"urls": ["stun:stun.l.google.com:19302"]},
             {
-                "urls": [
-                    "turn:openrelay.metered.ca:80",
-                    "turn:openrelay.metered.ca:443",
-                    "turn:openrelay.metered.ca:443?transport=tcp"
-                ],
+                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],  # ✅ TCP relay only
                 "username": "openrelayproject",
                 "credential": "openrelayproject"
             }
         ]
     }
 )
+
 
 # Sound alert if triggered
 if st.session_state['trigger_alert']:
