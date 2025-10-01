@@ -85,7 +85,18 @@ webrtc_streamer(
     key="posture-coach",
     video_transformer_factory=PostureDetector,
     media_stream_constraints={"video": True, "audio": False},
+    rtc_configuration={
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},  # Free Google STUN
+            {
+                "urls": ["turn:relay1.expressturn.com:3478"],  # Example TURN
+                "username": "efadaly",   # replace with your TURN username
+                "credential": "mypassword123"  # replace with your TURN password
+            }
+        ]
+    },
 )
+
 
 # Sound alert if triggered
 if st.session_state['trigger_alert']:
