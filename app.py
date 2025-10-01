@@ -17,14 +17,13 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 import io
-import base64
+import threading
+import queue
 
 # Configure STUN/TURN servers for WebRTC
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
     ]}
 )
 
@@ -44,6 +43,8 @@ def init_session_state():
         st.session_state['total_frames'] = 0
     if 'angle_history' not in st.session_state:
         st.session_state['angle_history'] = []
+    if 'frame_skip_counter' not in st.session_state:
+        st.session_state['frame_skip_counter'] = 0
 
 # Load audio alert
 def play_alert():
@@ -203,26 +204,59 @@ def generate_pdf_report():
     buffer.seek(0)
     return buffer
 
-# Posture Detector Class
+# Posture Detector Class - OPTIMIZED
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 class PostureDetector(VideoTransformerBase):
     def __init__(self):
+        # Use lighter model for better performance
         self.pose = mp_pose.Pose(
-            min_detection_confidence=0.5, 
-            min_tracking_confidence=0.5,
-            model_complexity=1
+            static_image_mode=False,
+            model_complexity=0,  # Lighter model (0 = lite, 1 = full, 2 = heavy)
+            smooth_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
         self.alert_triggered = False
+        self.frame_count = 0
+        self.process_every_n_frames = 3  # Process every 3rd frame for better performance
+        self.last_angle = None
+        self.local_good_count = 0
+        self.local_poor_count = 0
+        self.batch_update_interval = 30  # Update session state every 30 frames
+        self.angle_batch = []
 
     def transform(self, frame: av.VideoFrame) -> np.ndarray:
         image = frame.to_ndarray(format="bgr24")
+        
+        # Skip frames for performance
+        self.frame_count += 1
+        if self.frame_count % self.process_every_n_frames != 0:
+            # Just return the frame with last known status
+            if self.last_angle is not None:
+                color = (0, 255, 0) if self.last_angle >= 160 else (0, 0, 255)
+                posture = "✅ Good posture" if self.last_angle >= 160 else "⚠️ Poor posture"
+                cv2.putText(image, f'{int(self.last_angle)}°', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                cv2.putText(image, posture, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            return image
+        
+        # Process frame
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_rgb.flags.writeable = False  # Improve performance
         results = self.pose.process(image_rgb)
+        image_rgb.flags.writeable = True
 
         if results.pose_landmarks:
-            mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            # Draw landmarks with less detail for performance
+            mp_drawing.draw_landmarks(
+                image, 
+                results.pose_landmarks, 
+                mp_pose.POSE_CONNECTIONS,
+                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
+                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1)
+            )
+            
             lm = results.pose_landmarks.landmark
 
             shoulder = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
@@ -233,40 +267,48 @@ class PostureDetector(VideoTransformerBase):
                     lm[mp_pose.PoseLandmark.LEFT_KNEE.value].y]
 
             angle = calculate_angle(shoulder, hip, knee)
-            
-            # Store angle history
-            st.session_state['angle_history'].append(angle)
-            if len(st.session_state['angle_history']) > 1000:
-                st.session_state['angle_history'].pop(0)
-            
-            st.session_state['total_frames'] += 1
+            self.last_angle = angle
+            self.angle_batch.append(angle)
 
             if angle < 160:
                 posture = "⚠️ Poor posture"
                 color = (0, 0, 255)
-                st.session_state['poor_posture_count'] += 1
+                self.local_poor_count += 1
                 if not self.alert_triggered:
                     st.session_state['trigger_alert'] = True
                     self.alert_triggered = True
-                    
-                    # Log posture event
-                    st.session_state['posture_data'].append({
-                        'timestamp': datetime.now(),
-                        'angle': angle,
-                        'status': 'poor'
-                    })
             else:
                 posture = "✅ Good posture"
                 color = (0, 255, 0)
-                st.session_state['good_posture_count'] += 1
+                self.local_good_count += 1
                 self.alert_triggered = False
+
+            # Batch update session state to reduce overhead
+            if self.frame_count % self.batch_update_interval == 0:
+                st.session_state['poor_posture_count'] += self.local_poor_count
+                st.session_state['good_posture_count'] += self.local_good_count
+                st.session_state['total_frames'] += self.batch_update_interval
+                st.session_state['angle_history'].extend(self.angle_batch)
                 
-                # Log posture event
-                st.session_state['posture_data'].append({
-                    'timestamp': datetime.now(),
-                    'angle': angle,
-                    'status': 'good'
-                })
+                # Keep only last 500 angles in memory
+                if len(st.session_state['angle_history']) > 500:
+                    st.session_state['angle_history'] = st.session_state['angle_history'][-500:]
+                
+                # Add to posture data (sample only, not every frame)
+                if self.angle_batch:
+                    st.session_state['posture_data'].append({
+                        'timestamp': datetime.now(),
+                        'angle': np.mean(self.angle_batch),
+                        'status': 'poor' if np.mean(self.angle_batch) < 160 else 'good'
+                    })
+                    # Keep only last 200 data points
+                    if len(st.session_state['posture_data']) > 200:
+                        st.session_state['posture_data'] = st.session_state['posture_data'][-200:]
+                
+                # Reset local counters
+                self.local_poor_count = 0
+                self.local_good_count = 0
+                self.angle_batch = []
 
             cv2.putText(image, f'{int(angle)}°', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             cv2.putText(image, posture, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
@@ -285,22 +327,39 @@ init_session_state()
 # Sidebar navigation
 page = st.sidebar.radio("Navigation", ["🎥 Live Monitoring", "📊 Dashboard", "📄 Reports"])
 
+# Sidebar info
+st.sidebar.markdown("---")
+st.sidebar.info("""
+**Performance Tips:**
+- Good lighting improves detection
+- Position yourself fully in frame
+- Stable camera position is best
+- Close other browser tabs
+""")
+
 if page == "🎥 Live Monitoring":
     st.title("🧍 AI Ergonomic Coach for Dental Clinics")
-    st.write("This app uses your webcam to detect your sitting posture in real time.")
+    st.write("Real-time posture detection optimized for performance.")
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
         bad_posture_flag = st.empty()
         
-        # Launch webcam stream
+        # Launch webcam stream with optimized settings
         webrtc_ctx = webrtc_streamer(
             key="posture-coach",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
             video_transformer_factory=PostureDetector,
-            media_stream_constraints={"video": True, "audio": False},
+            media_stream_constraints={
+                "video": {
+                    "width": {"ideal": 640},  # Lower resolution for better performance
+                    "height": {"ideal": 480},
+                    "frameRate": {"ideal": 15, "max": 20}  # Lower frame rate
+                }, 
+                "audio": False
+            },
             async_processing=True,
         )
         
@@ -311,14 +370,28 @@ if page == "🎥 Live Monitoring":
             st.session_state['trigger_alert'] = False
     
     with col2:
-        st.subheader("Session Stats")
-        session_duration = datetime.now() - st.session_state['session_start']
-        st.metric("Session Duration", f"{int(session_duration.total_seconds() / 60)} min")
-        st.metric("Total Frames", st.session_state['total_frames'])
-        st.metric("Good Posture", st.session_state['good_posture_count'])
-        st.metric("Poor Posture", st.session_state['poor_posture_count'])
+        st.subheader("📊 Session Stats")
         
-        if st.button("🔄 Reset Session"):
+        # Auto-refresh stats
+        stats_placeholder = st.empty()
+        
+        with stats_placeholder.container():
+            session_duration = datetime.now() - st.session_state['session_start']
+            st.metric("⏱️ Duration", f"{int(session_duration.total_seconds() / 60)} min")
+            st.metric("🎬 Frames", st.session_state['total_frames'])
+            
+            total = st.session_state['good_posture_count'] + st.session_state['poor_posture_count']
+            if total > 0:
+                good_pct = (st.session_state['good_posture_count'] / total) * 100
+                st.metric("✅ Good", f"{st.session_state['good_posture_count']}", f"{good_pct:.1f}%")
+                st.metric("⚠️ Poor", f"{st.session_state['poor_posture_count']}", f"{100-good_pct:.1f}%")
+            else:
+                st.metric("✅ Good", "0")
+                st.metric("⚠️ Poor", "0")
+        
+        st.markdown("---")
+        
+        if st.button("🔄 Reset Session", type="secondary"):
             for key in ['posture_data', 'poor_posture_count', 'good_posture_count', 'total_frames', 'angle_history']:
                 st.session_state[key] = [] if key in ['posture_data', 'angle_history'] else 0
             st.session_state['session_start'] = datetime.now()
@@ -328,7 +401,7 @@ elif page == "📊 Dashboard":
     st.title("📊 Posture Analysis Dashboard")
     
     if len(st.session_state['posture_data']) == 0:
-        st.info("No data available yet. Start monitoring to see analytics.")
+        st.info("📹 No data available yet. Start monitoring to see analytics.")
     else:
         # Convert to DataFrame
         df = pd.DataFrame(st.session_state['posture_data'])
@@ -341,13 +414,13 @@ elif page == "📊 Dashboard":
         good_count = len(df[df['status'] == 'good'])
         avg_angle = df['angle'].mean()
         
-        col1.metric("Total Events", total_events)
-        col2.metric("Good Posture", f"{good_count} ({good_count/total_events*100:.1f}%)")
-        col3.metric("Poor Posture", f"{poor_count} ({poor_count/total_events*100:.1f}%)")
-        col4.metric("Avg Angle", f"{avg_angle:.1f}°")
+        col1.metric("📊 Total Events", total_events)
+        col2.metric("✅ Good Posture", f"{good_count} ({good_count/total_events*100:.1f}%)")
+        col3.metric("⚠️ Poor Posture", f"{poor_count} ({poor_count/total_events*100:.1f}%)")
+        col4.metric("📐 Avg Angle", f"{avg_angle:.1f}°")
         
         # Charts
-        st.subheader("Posture Distribution")
+        st.subheader("📈 Posture Distribution")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -368,22 +441,22 @@ elif page == "📊 Dashboard":
             st.plotly_chart(fig_hist, use_container_width=True)
         
         # Time series
-        st.subheader("Angle Over Time")
+        st.subheader("⏱️ Angle Over Time")
         if len(st.session_state['angle_history']) > 0:
             angle_df = pd.DataFrame({
-                'Frame': range(len(st.session_state['angle_history'])),
+                'Sample': range(len(st.session_state['angle_history'])),
                 'Angle': st.session_state['angle_history']
             })
-            fig_time = px.line(angle_df, x='Frame', y='Angle', title='Posture Angle Timeline')
+            fig_time = px.line(angle_df, x='Sample', y='Angle', title='Posture Angle Timeline')
             fig_time.add_hline(y=160, line_dash="dash", line_color="red", annotation_text="Good Posture Threshold")
             st.plotly_chart(fig_time, use_container_width=True)
         
         # Recent events table
-        st.subheader("Recent Posture Events")
+        st.subheader("📋 Recent Posture Events")
         recent_df = df.tail(20).copy()
         recent_df['timestamp'] = recent_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
         recent_df['angle'] = recent_df['angle'].round(1)
-        st.dataframe(recent_df, use_container_width=True)
+        st.dataframe(recent_df, use_container_width=True, hide_index=True)
 
 elif page == "📄 Reports":
     st.title("📄 Generate PDF Report")
@@ -391,12 +464,12 @@ elif page == "📄 Reports":
     st.write("Generate a comprehensive PDF report of your posture analysis session.")
     
     if len(st.session_state['posture_data']) == 0:
-        st.warning("No data available. Start monitoring to generate reports.")
+        st.warning("⚠️ No data available. Start monitoring to generate reports.")
     else:
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader("Report Preview")
+            st.subheader("📋 Report Preview")
             
             session_duration = datetime.now() - st.session_state['session_start']
             duration_minutes = int(session_duration.total_seconds() / 60)
@@ -404,10 +477,10 @@ elif page == "📄 Reports":
             total_posture = st.session_state['poor_posture_count'] + st.session_state['good_posture_count']
             poor_percentage = (st.session_state['poor_posture_count'] / total_posture * 100) if total_posture > 0 else 0
             
-            st.write(f"**Session Duration:** {duration_minutes} minutes")
-            st.write(f"**Total Frames Analyzed:** {st.session_state['total_frames']}")
-            st.write(f"**Good Posture:** {st.session_state['good_posture_count']} frames")
-            st.write(f"**Poor Posture:** {st.session_state['poor_posture_count']} frames ({poor_percentage:.1f}%)")
+            st.write(f"**⏱️ Session Duration:** {duration_minutes} minutes")
+            st.write(f"**🎬 Total Frames Analyzed:** {st.session_state['total_frames']}")
+            st.write(f"**✅ Good Posture:** {st.session_state['good_posture_count']} frames")
+            st.write(f"**⚠️ Poor Posture:** {st.session_state['poor_posture_count']} frames ({poor_percentage:.1f}%)")
             
             if poor_percentage > 50:
                 st.error("⚠️ Action Required: High percentage of poor posture detected")
@@ -417,16 +490,17 @@ elif page == "📄 Reports":
                 st.success("✅ Excellent: Good posture maintained")
         
         with col2:
-            st.subheader("Download Report")
+            st.subheader("⬇️ Download Report")
             
-            if st.button("📥 Generate PDF Report", type="primary"):
+            if st.button("📥 Generate PDF Report", type="primary", use_container_width=True):
                 with st.spinner("Generating PDF..."):
                     pdf_buffer = generate_pdf_report()
                     
                     st.download_button(
-                        label="Download PDF",
+                        label="📄 Download PDF",
                         data=pdf_buffer,
                         file_name=f"posture_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf"
+                        mime="application/pdf",
+                        use_container_width=True
                     )
-                    st.success("Report generated successfully!")
+                    st.success("✅ Report generated successfully!")
