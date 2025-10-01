@@ -1,10 +1,11 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import av
 import cv2
+import numpy as np
 import mediapipe as mp
+import math
 import streamlit.components.v1 as components
-from posture_utils import calculate_angle
 
 # Load audio only once
 def play_alert():
@@ -18,6 +19,13 @@ def play_alert():
         height=0,
     )
 
+# Helper function
+def calculate_angle(a, b, c):
+    a, b, c = np.array(a), np.array(b), np.array(c)
+    radians = math.atan2(c[1]-b[1], c[0]-b[0]) - math.atan2(a[1]-b[1], a[0]-b[0])
+    angle = np.abs(radians * 180.0 / np.pi)
+    return 360 - angle if angle > 180.0 else angle
+
 # Streamlit UI
 st.set_page_config(page_title="AI Ergonomic Coach", layout="centered")
 st.title("🧍 AI Ergonomic Coach for Dental Clinics")
@@ -29,12 +37,12 @@ mp_drawing = mp.solutions.drawing_utils
 
 bad_posture_flag = st.empty()
 
-class PostureDetector(VideoProcessorBase):   # ✅ updated base class
+class PostureDetector(VideoTransformerBase):
     def __init__(self):
         self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         self.alert_triggered = False
 
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:  # ✅ new method signature
+    def transform(self, frame: av.VideoFrame) -> np.ndarray:
         image = frame.to_ndarray(format="bgr24")
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = self.pose.process(image_rgb)
@@ -66,32 +74,23 @@ class PostureDetector(VideoProcessorBase):   # ✅ updated base class
             cv2.putText(image, f'{int(angle)}°', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             cv2.putText(image, posture, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-        return av.VideoFrame.from_ndarray(image, format="bgr24")
+        return image
 
 # Init alert state
 if 'trigger_alert' not in st.session_state:
     st.session_state['trigger_alert'] = False
 
-# Launch webcam stream with STUN + TURN servers
+# Launch webcam stream
 webrtc_streamer(
     key="posture-coach",
-    video_processor_factory=PostureDetector,   # ✅ updated arg
+    video_transformer_factory=PostureDetector,
     media_stream_constraints={"video": True, "audio": False},
-    rtc_configuration={
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {
-                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],  # ✅ TCP relay only
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            }
-        ]
-    }
 )
-
 
 # Sound alert if triggered
 if st.session_state['trigger_alert']:
     play_alert()
     bad_posture_flag.warning("⚠️ Poor posture detected! Please sit upright.")
     st.session_state['trigger_alert'] = False
+
+
