@@ -1,11 +1,20 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode, RTCConfiguration
 import av
 import cv2
 import numpy as np
 import mediapipe as mp
 import math
 import streamlit.components.v1 as components
+
+# Configure STUN/TURN servers for WebRTC
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+    ]}
+)
 
 # Load audio only once
 def play_alert():
@@ -39,7 +48,11 @@ bad_posture_flag = st.empty()
 
 class PostureDetector(VideoTransformerBase):
     def __init__(self):
-        self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.pose = mp_pose.Pose(
+            min_detection_confidence=0.5, 
+            min_tracking_confidence=0.5,
+            model_complexity=1
+        )
         self.alert_triggered = False
 
     def transform(self, frame: av.VideoFrame) -> np.ndarray:
@@ -76,15 +89,23 @@ class PostureDetector(VideoTransformerBase):
 
         return image
 
+    def __del__(self):
+        # Clean up MediaPipe resources
+        if hasattr(self, 'pose'):
+            self.pose.close()
+
 # Init alert state
 if 'trigger_alert' not in st.session_state:
     st.session_state['trigger_alert'] = False
 
-# Launch webcam stream
-webrtc_streamer(
+# Launch webcam stream with RTC configuration
+webrtc_ctx = webrtc_streamer(
     key="posture-coach",
+    mode=WebRtcMode.SENDRECV,
+    rtc_configuration=RTC_CONFIGURATION,
     video_transformer_factory=PostureDetector,
     media_stream_constraints={"video": True, "audio": False},
+    async_processing=True,
 )
 
 # Sound alert if triggered
@@ -92,5 +113,3 @@ if st.session_state['trigger_alert']:
     play_alert()
     bad_posture_flag.warning("⚠️ Poor posture detected! Please sit upright.")
     st.session_state['trigger_alert'] = False
-
-
