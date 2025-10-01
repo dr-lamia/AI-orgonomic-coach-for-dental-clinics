@@ -83,19 +83,22 @@ if 'trigger_alert' not in st.session_state:
 # Launch webcam stream
 webrtc_streamer(
     key="posture-coach",
-    video_transformer_factory=PostureDetector,
+    video_processor_factory=PostureDetector,   # ✅ new argument
     media_stream_constraints={"video": True, "audio": False},
     rtc_configuration={
         "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},  # Free Google STUN
-            {
-                "urls": ["turn:relay1.expressturn.com:3478"],  # Example TURN
-                "username": "efadaly",   # replace with your TURN username
-                "credential": "mypassword123"  # replace with your TURN password
-            }
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": [
+                "turn:openrelay.metered.ca:80",
+                "turn:openrelay.metered.ca:443",
+                "turn:openrelay.metered.ca:443?transport=tcp"
+            ],
+             "username": "openrelayproject",
+             "credential": "openrelayproject"}
         ]
-    },
+    }
 )
+
 
 
 # Sound alert if triggered
