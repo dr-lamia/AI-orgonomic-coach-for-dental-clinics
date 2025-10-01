@@ -1,18 +1,52 @@
-import mediapipe as mp
+"""Utility helpers for posture analysis."""
+
+from __future__ import annotations
+
 import math
+from typing import Iterable, Sequence, Tuple, Union
 
-mp_pose = mp.solutions.pose
+Number = Union[int, float]
+PointLike = Union[Sequence[Number], Iterable[Number]]
 
-def calculate_angle(a, b, c):
-    """Calculate angle between three points"""
-    a = [a.x, a.y]
-    b = [b.x, b.y]
-    c = [c.x, c.y]
 
-    radians = math.atan2(c[1] - b[1], c[0] - b[0]) - \
-              math.atan2(a[1] - b[1], a[0] - b[0])
-    angle = abs(radians * 180.0 / math.pi)
+def _normalize_point(point: Union[PointLike, object]) -> Tuple[float, float]:
+    """Return the ``(x, y)`` representation of a Mediapipe landmark or sequence."""
 
-    if angle > 180.0:
-        angle = 360 - angle
+    if hasattr(point, "x") and hasattr(point, "y"):
+        return float(getattr(point, "x")), float(getattr(point, "y"))
+
+    if isinstance(point, Sequence):
+        if len(point) < 2:
+            raise ValueError("Point sequences must contain at least two elements.")
+        return float(point[0]), float(point[1])
+
+    try:
+        iterator = iter(point)  # type: ignore[arg-type]
+        x = float(next(iterator))
+        y = float(next(iterator))
+    except TypeError as exc:
+        raise TypeError("Unsupported point representation provided.") from exc
+    except StopIteration as exc:
+        raise ValueError("Point iterables must yield at least two values.") from exc
+
+    return x, y
+
+
+def calculate_angle(a: Union[PointLike, object],
+                    b: Union[PointLike, object],
+                    c: Union[PointLike, object]) -> float:
+    """Calculate the angle ABC (in degrees) formed by three 2D points."""
+
+    ax, ay = _normalize_point(a)
+    bx, by = _normalize_point(b)
+    cx, cy = _normalize_point(c)
+
+    ba_x, ba_y = ax - bx, ay - by
+    bc_x, bc_y = cx - bx, cy - by
+
+    dot = ba_x * bc_x + ba_y * bc_y
+    cross = ba_x * bc_y - ba_y * bc_x
+
+    angle = abs(math.degrees(math.atan2(cross, dot)))
+
     return angle

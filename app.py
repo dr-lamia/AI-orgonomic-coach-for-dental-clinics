@@ -2,10 +2,9 @@ import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 import av
 import cv2
-import numpy as np
 import mediapipe as mp
-import math
 import streamlit.components.v1 as components
+from posture_utils import calculate_angle
 
 # Load audio only once
 def play_alert():
@@ -18,13 +17,6 @@ def play_alert():
         """,
         height=0,
     )
-
-# Helper function
-def calculate_angle(a, b, c):
-    a, b, c = np.array(a), np.array(b), np.array(c)
-    radians = math.atan2(c[1]-b[1], c[0]-b[0]) - math.atan2(a[1]-b[1], a[0]-b[0])
-    angle = np.abs(radians * 180.0 / np.pi)
-    return 360 - angle if angle > 180.0 else angle
 
 # Streamlit UI
 st.set_page_config(page_title="AI Ergonomic Coach", layout="centered")
